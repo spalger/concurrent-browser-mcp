@@ -510,6 +510,63 @@ export class BrowserTools {
         }
       },
 
+      // Network traffic tools
+      {
+        name: 'browser_get_network_logs',
+        description: 'Get captured network traffic. Returns API/fetch/XHR requests by default. Use includeAssets to also get static resources (HTML, CSS, JS, images, fonts).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            instanceId: {
+              type: 'string',
+              description: 'Instance ID'
+            },
+            includeAssets: {
+              type: 'boolean',
+              description: 'Also return static asset requests (documents, stylesheets, images, scripts, fonts)',
+              default: false
+            },
+            resourceType: {
+              type: 'string',
+              description: 'Filter by resource type (e.g. xhr, fetch, document, stylesheet, image, script, font)'
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximum number of entries to return (most recent)',
+              minimum: 1
+            },
+            clear: {
+              type: 'boolean',
+              description: 'Clear the log buffer(s) after retrieving',
+              default: false
+            }
+          },
+          required: ['instanceId']
+        }
+      },
+      {
+        name: 'browser_get_response_body',
+        description: 'Get the cached response body for a specific network request. Only text-based responses are cached (up to 100KB). Identify the request by HTTP method and URL.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            instanceId: {
+              type: 'string',
+              description: 'Instance ID'
+            },
+            method: {
+              type: 'string',
+              description: 'HTTP method (e.g. GET, POST)'
+            },
+            url: {
+              type: 'string',
+              description: 'Request URL to match'
+            }
+          },
+          required: ['instanceId', 'method', 'url']
+        }
+      },
+
       // Content extraction tool
       {
         name: 'browser_get_markdown',
@@ -635,6 +692,21 @@ export class BrowserTools {
             clear: (args['clear'] as boolean) ?? false,
           });
 
+        case 'browser_get_network_logs':
+          return this.browserManager.getNetworkLogs(args['instanceId'] as string, {
+            includeAssets: (args['includeAssets'] as boolean) ?? false,
+            resourceType: args['resourceType'] as string | undefined,
+            limit: args['limit'] as number | undefined,
+            clear: (args['clear'] as boolean) ?? false,
+          });
+
+        case 'browser_get_response_body':
+          return this.browserManager.getResponseBody(
+            args['instanceId'] as string,
+            args['method'] as string,
+            args['url'] as string,
+          );
+
         case 'browser_get_markdown':
           return await this.getMarkdown(args['instanceId'] as string, {
             includeLinks: (args['includeLinks'] as boolean) ?? true,
@@ -671,6 +743,12 @@ export class BrowserTools {
 
     if (instance.consoleLogs) {
       instance.consoleLogs.length = 0;
+    }
+    if (instance.networkApiLogs) {
+      instance.networkApiLogs.length = 0;
+    }
+    if (instance.networkAssetLogs) {
+      instance.networkAssetLogs.length = 0;
     }
 
     try {

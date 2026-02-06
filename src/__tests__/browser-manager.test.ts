@@ -555,6 +555,336 @@ describe('BrowserManager', () => {
     });
   });
 
+  describe('network traffic capture', () => {
+    function createMockResponse(overrides: Record<string, unknown> = {}) {
+      const defaults = {
+        url: () => 'https://api.example.com/data',
+        method: () => 'GET',
+        resourceType: () => 'xhr',
+        timing: () => ({ startTime: 0, responseEnd: 150 }),
+        failure: () => null,
+      };
+      const request = { ...defaults, ...overrides };
+      return {
+        request: () => request,
+        status: () => (overrides['status'] as number) ?? 200,
+        statusText: () => (overrides['statusText'] as string) ?? 'OK',
+        headers: () => (overrides['headers'] as Record<string, string>) ?? { 'content-type': 'application/json' },
+        text: () => Promise.resolve((overrides['body'] as string) ?? '{"ok":true}'),
+      };
+    }
+
+    function createMockFailedRequest(overrides: Record<string, unknown> = {}) {
+      return {
+        url: () => (overrides['url'] as string) ?? 'https://api.example.com/fail',
+        method: () => (overrides['method'] as string) ?? 'GET',
+        resourceType: () => (overrides['resourceType'] as string) ?? 'xhr',
+        failure: () => ({ errorText: (overrides['errorText'] as string) ?? 'net::ERR_FAILED' }),
+      };
+    }
+
+    let listeners: Record<string, Array<(arg: unknown) => void>>;
+
+    beforeEach(() => {
+      listeners = {};
+      mockPage.on.mockImplementation((event: string, cb: (arg: unknown) => void) => {
+        if (!listeners[event]) listeners[event] = [];
+        listeners[event].push(cb);
+      });
+    });
+
+    function fireEvent(event: string, data: unknown) {
+      for (const cb of listeners[event] ?? []) {
+        cb(data);
+      }
+    }
+
+    it('attaches response and requestfailed listeners when creating an instance', async () => {
+      await manager.createInstance();
+
+      expect(mockPage.on).toHaveBeenCalledWith('response', expect.any(Function));
+      expect(mockPage.on).toHaveBeenCalledWith('requestfailed', expect.any(Function));
+    });
+
+    it('captures successful API responses into networkApiLogs', async () => {
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      fireEvent('response', createMockResponse());
+      await vi.advanceTimersByTimeAsync(0);
+
+      const instance = manager.getInstance(id);
+      expect(instance!.networkApiLogs).toHaveLength(1);
+      expect(instance!.networkApiLogs![0].url).toBe('https://api.example.com/data');
+      expect(instance!.networkApiLogs![0].method).toBe('GET');
+      expect(instance!.networkApiLogs![0].status).toBe(200);
+      expect(instance!.networkApiLogs![0].resourceType).toBe('xhr');
+    });
+
+    it('classifies static resources into networkAssetLogs', async () => {
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      fireEvent('response', createMockResponse({
+        resourceType: () => 'stylesheet',
+        url: () => 'https://example.com/style.css',
+        headers: () => ({ 'content-type': 'text/css' }),
+        body: 'body { color: red; }',
+      }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      const instance = manager.getInstance(id);
+      expect(instance!.networkApiLogs).toHaveLength(0);
+      expect(instance!.networkAssetLogs).toHaveLength(1);
+      expect(instance!.networkAssetLogs![0].resourceType).toBe('stylesheet');
+    });
+
+    it('classifies fetch and xhr as API, document and image as asset', async () => {
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      const types = [
+        { type: 'fetch', expectApi: true },
+        { type: 'xhr', expectApi: true },
+        { type: 'document', expectApi: false },
+        { type: 'image', expectApi: false },
+        { type: 'script', expectApi: false },
+      ];
+
+      for (const { type } of types) {
+        fireEvent('response', createMockResponse({
+          resourceType: () => type,
+          headers: () => ({ 'content-type': 'text/plain' }),
+        }));
+      }
+      await vi.advanceTimersByTimeAsync(0);
+
+      const instance = manager.getInstance(id);
+      expect(instance!.networkApiLogs).toHaveLength(2); // fetch, xhr
+      expect(instance!.networkAssetLogs).toHaveLength(3); // document, image, script
+    });
+
+    it('evicts oldest API entries when exceeding 500 cap', async () => {
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      for (let i = 0; i < 505; i++) {
+        fireEvent('response', createMockResponse({
+          url: () => `https://api.example.com/item/${i}`,
+        }));
+      }
+      await vi.advanceTimersByTimeAsync(0);
+
+      const instance = manager.getInstance(id);
+      expect(instance!.networkApiLogs).toHaveLength(500);
+      expect(instance!.networkApiLogs![0].url).toBe('https://api.example.com/item/5');
+    });
+
+    it('evicts oldest asset entries when exceeding 200 cap', async () => {
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      for (let i = 0; i < 205; i++) {
+        fireEvent('response', createMockResponse({
+          resourceType: () => 'image',
+          url: () => `https://example.com/img/${i}.png`,
+          headers: () => ({ 'content-type': 'image/png' }),
+        }));
+      }
+      await vi.advanceTimersByTimeAsync(0);
+
+      const instance = manager.getInstance(id);
+      expect(instance!.networkAssetLogs).toHaveLength(200);
+      expect(instance!.networkAssetLogs![0].url).toBe('https://example.com/img/5.png');
+    });
+
+    it('captures failed requests with error info', async () => {
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      fireEvent('requestfailed', createMockFailedRequest());
+
+      const instance = manager.getInstance(id);
+      expect(instance!.networkApiLogs).toHaveLength(1);
+      expect(instance!.networkApiLogs![0].error).toBe('net::ERR_FAILED');
+      expect(instance!.networkApiLogs![0].status).toBeUndefined();
+    });
+
+    it('caches text response bodies up to size limit', async () => {
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      fireEvent('response', createMockResponse({ body: '{"data":"cached"}' }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      const instance = manager.getInstance(id);
+      expect(instance!.networkApiLogs![0].cachedBody).toBe('{"data":"cached"}');
+    });
+
+    it('does not cache non-text response bodies', async () => {
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      fireEvent('response', createMockResponse({
+        headers: () => ({ 'content-type': 'image/png' }),
+        resourceType: () => 'fetch',
+      }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      const instance = manager.getInstance(id);
+      expect(instance!.networkApiLogs![0].cachedBody).toBeUndefined();
+    });
+
+    it('captures response timing as duration', async () => {
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      fireEvent('response', createMockResponse({
+        timing: () => ({ startTime: 10, responseEnd: 260 }),
+      }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      const instance = manager.getInstance(id);
+      expect(instance!.networkApiLogs![0].duration).toBe(250);
+    });
+
+    describe('getNetworkLogs', () => {
+      it('returns API logs by default without cached bodies', async () => {
+        const result = await manager.createInstance();
+        const id = result.instanceId!;
+
+        fireEvent('response', createMockResponse({ body: '{"secret":"data"}' }));
+        await vi.advanceTimersByTimeAsync(0);
+
+        const logsResult = manager.getNetworkLogs(id);
+        expect(logsResult.success).toBe(true);
+        expect(logsResult.data.apiLogs).toHaveLength(1);
+        expect(logsResult.data.apiLogs[0].cachedBody).toBeUndefined();
+        expect(logsResult.data.totalApiEntries).toBe(1);
+        expect(logsResult.data.assetLogs).toBeUndefined();
+      });
+
+      it('includes asset logs when includeAssets=true', async () => {
+        const result = await manager.createInstance();
+        const id = result.instanceId!;
+
+        fireEvent('response', createMockResponse());
+        fireEvent('response', createMockResponse({
+          resourceType: () => 'image',
+          url: () => 'https://example.com/img.png',
+          headers: () => ({ 'content-type': 'image/png' }),
+        }));
+        await vi.advanceTimersByTimeAsync(0);
+
+        const logsResult = manager.getNetworkLogs(id, { includeAssets: true });
+        expect(logsResult.data.apiLogs).toHaveLength(1);
+        expect(logsResult.data.assetLogs).toHaveLength(1);
+        expect(logsResult.data.totalAssetEntries).toBe(1);
+      });
+
+      it('filters by resourceType', async () => {
+        const result = await manager.createInstance();
+        const id = result.instanceId!;
+
+        fireEvent('response', createMockResponse({ resourceType: () => 'xhr' }));
+        fireEvent('response', createMockResponse({ resourceType: () => 'fetch' }));
+        await vi.advanceTimersByTimeAsync(0);
+
+        const logsResult = manager.getNetworkLogs(id, { resourceType: 'fetch' });
+        expect(logsResult.data.apiLogs).toHaveLength(1);
+        expect(logsResult.data.apiLogs[0].resourceType).toBe('fetch');
+        expect(logsResult.data.filtered).toBe(true);
+      });
+
+      it('respects limit (returns most recent)', async () => {
+        const result = await manager.createInstance();
+        const id = result.instanceId!;
+
+        for (let i = 0; i < 10; i++) {
+          fireEvent('response', createMockResponse({
+            url: () => `https://api.example.com/item/${i}`,
+          }));
+        }
+        await vi.advanceTimersByTimeAsync(0);
+
+        const logsResult = manager.getNetworkLogs(id, { limit: 3 });
+        expect(logsResult.data.apiLogs).toHaveLength(3);
+        expect(logsResult.data.apiLogs[0].url).toBe('https://api.example.com/item/7');
+        expect(logsResult.data.apiLogs[2].url).toBe('https://api.example.com/item/9');
+      });
+
+      it('clears buffers when clear=true', async () => {
+        const result = await manager.createInstance();
+        const id = result.instanceId!;
+
+        fireEvent('response', createMockResponse());
+        await vi.advanceTimersByTimeAsync(0);
+
+        const logsResult = manager.getNetworkLogs(id, { clear: true });
+        expect(logsResult.data.apiLogs).toHaveLength(1);
+        expect(logsResult.data.cleared).toBe(true);
+
+        const afterResult = manager.getNetworkLogs(id);
+        expect(afterResult.data.apiLogs).toHaveLength(0);
+      });
+
+      it('returns error for non-existent instance', () => {
+        const logsResult = manager.getNetworkLogs('non-existent');
+        expect(logsResult.success).toBe(false);
+        expect(logsResult.error).toContain('not found');
+      });
+    });
+
+    describe('getResponseBody', () => {
+      it('returns cached body for matching method+url', async () => {
+        const result = await manager.createInstance();
+        const id = result.instanceId!;
+
+        fireEvent('response', createMockResponse({
+          url: () => 'https://api.example.com/users',
+          method: () => 'POST',
+          body: '{"users":[]}',
+        }));
+        await vi.advanceTimersByTimeAsync(0);
+
+        const bodyResult = manager.getResponseBody(id, 'POST', 'https://api.example.com/users');
+        expect(bodyResult.success).toBe(true);
+        expect(bodyResult.data.found).toBe(true);
+        expect(bodyResult.data.body).toBe('{"users":[]}');
+        expect(bodyResult.data.contentLength).toBe(12);
+      });
+
+      it('returns not-found for non-matching request', async () => {
+        const result = await manager.createInstance();
+        const id = result.instanceId!;
+
+        fireEvent('response', createMockResponse());
+        await vi.advanceTimersByTimeAsync(0);
+
+        const bodyResult = manager.getResponseBody(id, 'POST', 'https://api.example.com/other');
+        expect(bodyResult.data.found).toBe(false);
+      });
+
+      it('returns most recent match when multiple exist', async () => {
+        const result = await manager.createInstance();
+        const id = result.instanceId!;
+
+        fireEvent('response', createMockResponse({ body: 'first' }));
+        fireEvent('response', createMockResponse({ body: 'second' }));
+        await vi.advanceTimersByTimeAsync(0);
+
+        const bodyResult = manager.getResponseBody(id, 'GET', 'https://api.example.com/data');
+        expect(bodyResult.data.body).toBe('second');
+      });
+
+      it('returns error for non-existent instance', () => {
+        const bodyResult = manager.getResponseBody('non-existent', 'GET', 'https://example.com');
+        expect(bodyResult.success).toBe(false);
+        expect(bodyResult.error).toContain('not found');
+      });
+    });
+  });
+
   describe('destroy', () => {
     it('stops cleanup timer and closes all instances', async () => {
       await manager.createInstance();

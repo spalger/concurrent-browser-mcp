@@ -11,6 +11,19 @@ export interface ConsoleLogEntry {
   };
 }
 
+export interface NetworkLogEntry {
+  url: string;
+  method: string;
+  resourceType: string;
+  status?: number;
+  statusText?: string;
+  headers?: Record<string, string>;
+  timestamp: string;
+  duration?: number;
+  error?: string;
+  cachedBody?: string;
+}
+
 export interface BrowserInstance {
   id: string;
   browser: Browser;
@@ -20,6 +33,8 @@ export interface BrowserInstance {
   lastUsed: Date;
   isActive: boolean;
   consoleLogs?: ConsoleLogEntry[];
+  networkApiLogs?: NetworkLogEntry[];
+  networkAssetLogs?: NetworkLogEntry[];
   metadata?: {
     name?: string;
     tags?: string[];

@@ -42,6 +42,14 @@ function createMockBrowserManager() {
       success: true,
       data: { logs: [], totalEntries: 0, returnedEntries: 0, filtered: false, cleared: false },
     }),
+    getNetworkLogs: vi.fn().mockReturnValue({
+      success: true,
+      data: { apiLogs: [], totalApiEntries: 0, returnedApiEntries: 0, filtered: false, cleared: false },
+    }),
+    getResponseBody: vi.fn().mockReturnValue({
+      success: true,
+      data: { found: false, method: 'GET', url: 'https://example.com' },
+    }),
   };
 
   return { manager, mockInstance, mockPage };
@@ -92,6 +100,8 @@ describe('BrowserTools', () => {
       expect(toolNames).toContain('browser_close_instance');
       expect(toolNames).toContain('browser_close_all_instances');
       expect(toolNames).toContain('browser_get_console_logs');
+      expect(toolNames).toContain('browser_get_network_logs');
+      expect(toolNames).toContain('browser_get_response_body');
     });
 
     it('each tool has name, description, and inputSchema', () => {
@@ -563,6 +573,56 @@ describe('BrowserTools', () => {
     });
   });
 
+  describe('getNetworkLogs', () => {
+    it('routes browser_get_network_logs to manager.getNetworkLogs', async () => {
+      const result = await tools.executeTools('browser_get_network_logs', {
+        instanceId: 'test-instance-1',
+      });
+
+      expect(manager.getNetworkLogs).toHaveBeenCalledWith('test-instance-1', {
+        includeAssets: false,
+        resourceType: undefined,
+        limit: undefined,
+        clear: false,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('passes all options through', async () => {
+      await tools.executeTools('browser_get_network_logs', {
+        instanceId: 'test-instance-1',
+        includeAssets: true,
+        resourceType: 'xhr',
+        limit: 50,
+        clear: true,
+      });
+
+      expect(manager.getNetworkLogs).toHaveBeenCalledWith('test-instance-1', {
+        includeAssets: true,
+        resourceType: 'xhr',
+        limit: 50,
+        clear: true,
+      });
+    });
+  });
+
+  describe('getResponseBody', () => {
+    it('routes browser_get_response_body to manager.getResponseBody', async () => {
+      const result = await tools.executeTools('browser_get_response_body', {
+        instanceId: 'test-instance-1',
+        method: 'POST',
+        url: 'https://api.example.com/data',
+      });
+
+      expect(manager.getResponseBody).toHaveBeenCalledWith(
+        'test-instance-1',
+        'POST',
+        'https://api.example.com/data',
+      );
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe('navigate clears console logs', () => {
     it('clears consoleLogs buffer before navigating', async () => {
       const mockInstance = manager.getInstance('test-instance-1')!;
@@ -576,6 +636,26 @@ describe('BrowserTools', () => {
       });
 
       expect((mockInstance as Record<string, unknown>)['consoleLogs']).toEqual([]);
+    });
+  });
+
+  describe('navigate clears network buffers', () => {
+    it('clears networkApiLogs and networkAssetLogs before navigating', async () => {
+      const mockInstance = manager.getInstance('test-instance-1')!;
+      (mockInstance as Record<string, unknown>)['networkApiLogs'] = [
+        { url: 'https://old.com/api', method: 'GET', resourceType: 'xhr', timestamp: '' },
+      ];
+      (mockInstance as Record<string, unknown>)['networkAssetLogs'] = [
+        { url: 'https://old.com/style.css', method: 'GET', resourceType: 'stylesheet', timestamp: '' },
+      ];
+
+      await tools.executeTools('browser_navigate', {
+        instanceId: 'test-instance-1',
+        url: 'https://newsite.com',
+      });
+
+      expect((mockInstance as Record<string, unknown>)['networkApiLogs']).toEqual([]);
+      expect((mockInstance as Record<string, unknown>)['networkAssetLogs']).toEqual([]);
     });
   });
 

@@ -1,9 +1,21 @@
 import { chromium, firefox, webkit, Browser } from 'playwright';
 import { v4 as uuidv4 } from 'uuid';
-import { BrowserInstance, BrowserConfig, ServerConfig, ToolResult, ConsoleLogEntry } from './types.js';
+import { BrowserInstance, BrowserConfig, ServerConfig, ToolResult, ConsoleLogEntry, NetworkLogEntry } from './types.js';
 import { execSync } from 'child_process';
 
 const MAX_CONSOLE_LOG_ENTRIES = 1000;
+const MAX_NETWORK_API_ENTRIES = 500;
+const MAX_NETWORK_ASSET_ENTRIES = 200;
+const MAX_CACHED_BODY_SIZE = 100_000;
+
+const STATIC_RESOURCE_TYPES = new Set([
+  'document', 'stylesheet', 'image', 'media', 'font', 'script', 'texttrack', 'manifest',
+]);
+
+const TEXT_CONTENT_TYPES = [
+  'text/', 'application/json', 'application/xml', 'application/javascript',
+  'application/x-javascript', 'application/xhtml+xml', 'application/ld+json',
+];
 
 export class BrowserManager {
   private instances: Map<string, BrowserInstance> = new Map();
@@ -199,6 +211,78 @@ export class BrowserManager {
         }
       });
 
+      const networkApiLogs: NetworkLogEntry[] = [];
+      const networkAssetLogs: NetworkLogEntry[] = [];
+
+      page.on('response', async (response) => {
+        try {
+          const request = response.request();
+          const resourceType = request.resourceType();
+          const entry: NetworkLogEntry = {
+            url: request.url(),
+            method: request.method(),
+            resourceType,
+            status: response.status(),
+            statusText: response.statusText(),
+            headers: response.headers(),
+            timestamp: new Date().toISOString(),
+          };
+
+          try {
+            const timing = request.timing();
+            if (timing.responseEnd >= 0 && timing.startTime >= 0) {
+              entry.duration = timing.responseEnd - timing.startTime;
+            }
+          } catch {
+            // timing may not be available
+          }
+
+          const contentType = response.headers()['content-type'] ?? '';
+          const isTextContent = TEXT_CONTENT_TYPES.some((t) => contentType.includes(t));
+          if (isTextContent) {
+            try {
+              const body = await response.text();
+              if (body.length <= MAX_CACHED_BODY_SIZE) {
+                entry.cachedBody = body;
+              }
+            } catch {
+              // body may not be available
+            }
+          }
+
+          const targetBuffer = STATIC_RESOURCE_TYPES.has(resourceType) ? networkAssetLogs : networkApiLogs;
+          const maxEntries = STATIC_RESOURCE_TYPES.has(resourceType) ? MAX_NETWORK_ASSET_ENTRIES : MAX_NETWORK_API_ENTRIES;
+          targetBuffer.push(entry);
+          if (targetBuffer.length > maxEntries) {
+            targetBuffer.splice(0, targetBuffer.length - maxEntries);
+          }
+        } catch {
+          // ignore errors in response handler
+        }
+      });
+
+      page.on('requestfailed', (request) => {
+        try {
+          const resourceType = request.resourceType();
+          const entry: NetworkLogEntry = {
+            url: request.url(),
+            method: request.method(),
+            resourceType,
+            timestamp: new Date().toISOString(),
+            error: request.failure()?.errorText,
+          };
+
+          const targetBuffer = STATIC_RESOURCE_TYPES.has(resourceType) ? networkAssetLogs : networkApiLogs;
+          const maxEntries = STATIC_RESOURCE_TYPES.has(resourceType) ? MAX_NETWORK_ASSET_ENTRIES : MAX_NETWORK_API_ENTRIES;
+          targetBuffer.push(entry);
+          if (targetBuffer.length > maxEntries) {
+            targetBuffer.splice(0, targetBuffer.length - maxEntries);
+          }
+        } catch {
+          // ignore errors in requestfailed handler
+        }
+      });
+
       const instanceId = uuidv4();
       const instance: BrowserInstance = {
         id: instanceId,
@@ -209,6 +293,8 @@ export class BrowserManager {
         lastUsed: new Date(),
         isActive: true,
         consoleLogs,
+        networkApiLogs,
+        networkAssetLogs,
         ...(metadata && { metadata })
       };
 
@@ -288,6 +374,114 @@ export class BrowserManager {
         returnedEntries,
         filtered,
         cleared,
+      },
+      instanceId,
+    };
+  }
+
+  /**
+   * Get network logs for an instance
+   */
+  getNetworkLogs(
+    instanceId: string,
+    options?: { includeAssets?: boolean; resourceType?: string; limit?: number; clear?: boolean }
+  ): ToolResult {
+    const instance = this.instances.get(instanceId);
+    if (!instance) {
+      return { success: false, error: `Instance ${instanceId} not found` };
+    }
+
+    const apiLogs = instance.networkApiLogs!;
+    const assetLogs = instance.networkAssetLogs!;
+    const totalApiEntries = apiLogs.length;
+    const totalAssetEntries = assetLogs.length;
+
+    const stripBody = (entries: NetworkLogEntry[]): Omit<NetworkLogEntry, 'cachedBody'>[] =>
+      entries.map(({ cachedBody, ...rest }) => rest);
+
+    let filteredApiLogs = [...apiLogs];
+    let filteredAssetLogs = options?.includeAssets ? [...assetLogs] : [];
+    const filtered = !!options?.resourceType;
+
+    if (options?.resourceType) {
+      filteredApiLogs = filteredApiLogs.filter((e) => e.resourceType === options.resourceType);
+      filteredAssetLogs = filteredAssetLogs.filter((e) => e.resourceType === options.resourceType);
+    }
+
+    if (options?.limit && options.limit > 0) {
+      filteredApiLogs = filteredApiLogs.slice(-options.limit);
+      filteredAssetLogs = filteredAssetLogs.slice(-options.limit);
+    }
+
+    const returnedApiEntries = filteredApiLogs.length;
+    const returnedAssetEntries = options?.includeAssets ? filteredAssetLogs.length : undefined;
+    const cleared = !!options?.clear;
+
+    const resultApiLogs = stripBody(filteredApiLogs);
+    const resultAssetLogs = options?.includeAssets ? stripBody(filteredAssetLogs) : undefined;
+
+    if (cleared) {
+      apiLogs.length = 0;
+      if (options?.includeAssets) {
+        assetLogs.length = 0;
+      }
+    }
+
+    const data: Record<string, unknown> = {
+      apiLogs: resultApiLogs,
+      totalApiEntries,
+      returnedApiEntries,
+      filtered,
+      cleared,
+    };
+
+    if (options?.includeAssets) {
+      data['assetLogs'] = resultAssetLogs;
+      data['totalAssetEntries'] = totalAssetEntries;
+      data['returnedAssetEntries'] = returnedAssetEntries;
+    }
+
+    return {
+      success: true,
+      data,
+      instanceId,
+    };
+  }
+
+  /**
+   * Get the cached response body for a specific network request
+   */
+  getResponseBody(instanceId: string, method: string, url: string): ToolResult {
+    const instance = this.instances.get(instanceId);
+    if (!instance) {
+      return { success: false, error: `Instance ${instanceId} not found` };
+    }
+
+    // Search both buffers, most recent match wins
+    const allLogs = [...(instance.networkApiLogs ?? []), ...(instance.networkAssetLogs ?? [])];
+    let match: NetworkLogEntry | undefined;
+    for (const entry of allLogs) {
+      if (entry.method === method && entry.url === url && entry.cachedBody !== undefined) {
+        match = entry;
+      }
+    }
+
+    if (!match) {
+      return {
+        success: true,
+        data: { found: false, method, url },
+        instanceId,
+      };
+    }
+
+    return {
+      success: true,
+      data: {
+        found: true,
+        url: match.url,
+        method: match.method,
+        body: match.cachedBody,
+        contentLength: match.cachedBody!.length,
       },
       instanceId,
     };
