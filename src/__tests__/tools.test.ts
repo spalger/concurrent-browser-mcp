@@ -38,6 +38,10 @@ function createMockBrowserManager() {
       success: true,
       data: { closedCount: 1 },
     }),
+    getConsoleLogs: vi.fn().mockReturnValue({
+      success: true,
+      data: { logs: [], totalEntries: 0, returnedEntries: 0, filtered: false, cleared: false },
+    }),
   };
 
   return { manager, mockInstance, mockPage };
@@ -87,6 +91,7 @@ describe('BrowserTools', () => {
       expect(toolNames).toContain('browser_list_instances');
       expect(toolNames).toContain('browser_close_instance');
       expect(toolNames).toContain('browser_close_all_instances');
+      expect(toolNames).toContain('browser_get_console_logs');
     });
 
     it('each tool has name, description, and inputSchema', () => {
@@ -525,6 +530,52 @@ describe('BrowserTools', () => {
       );
       expect(result.success).toBe(true);
       expect(result.data.markdown).toBe('# Title\n\nContent');
+    });
+  });
+
+  describe('getConsoleLogs', () => {
+    it('routes browser_get_console_logs to manager.getConsoleLogs', async () => {
+      const result = await tools.executeTools('browser_get_console_logs', {
+        instanceId: 'test-instance-1',
+      });
+
+      expect(manager.getConsoleLogs).toHaveBeenCalledWith('test-instance-1', {
+        type: undefined,
+        limit: undefined,
+        clear: false,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('passes type, limit, and clear options through', async () => {
+      await tools.executeTools('browser_get_console_logs', {
+        instanceId: 'test-instance-1',
+        type: 'error',
+        limit: 10,
+        clear: true,
+      });
+
+      expect(manager.getConsoleLogs).toHaveBeenCalledWith('test-instance-1', {
+        type: 'error',
+        limit: 10,
+        clear: true,
+      });
+    });
+  });
+
+  describe('navigate clears console logs', () => {
+    it('clears consoleLogs buffer before navigating', async () => {
+      const mockInstance = manager.getInstance('test-instance-1')!;
+      (mockInstance as Record<string, unknown>)['consoleLogs'] = [
+        { type: 'log', text: 'old', timestamp: '', location: { url: '', lineNumber: 0, columnNumber: 0 } },
+      ];
+
+      await tools.executeTools('browser_navigate', {
+        instanceId: 'test-instance-1',
+        url: 'https://newsite.com',
+      });
+
+      expect((mockInstance as Record<string, unknown>)['consoleLogs']).toEqual([]);
     });
   });
 

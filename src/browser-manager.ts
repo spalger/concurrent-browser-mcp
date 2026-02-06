@@ -1,7 +1,9 @@
 import { chromium, firefox, webkit, Browser } from 'playwright';
 import { v4 as uuidv4 } from 'uuid';
-import { BrowserInstance, BrowserConfig, ServerConfig, ToolResult } from './types.js';
+import { BrowserInstance, BrowserConfig, ServerConfig, ToolResult, ConsoleLogEntry } from './types.js';
 import { execSync } from 'child_process';
+
+const MAX_CONSOLE_LOG_ENTRIES = 1000;
 
 export class BrowserManager {
   private instances: Map<string, BrowserInstance> = new Map();
@@ -178,7 +180,25 @@ export class BrowserManager {
       const context = await browser.newContext(contextOptions);
 
       const page = await context.newPage();
-      
+
+      const consoleLogs: ConsoleLogEntry[] = [];
+      page.on('console', (msg) => {
+        const location = msg.location();
+        consoleLogs.push({
+          type: msg.type(),
+          text: msg.text(),
+          timestamp: new Date().toISOString(),
+          location: {
+            url: location.url,
+            lineNumber: location.lineNumber,
+            columnNumber: location.columnNumber,
+          },
+        });
+        if (consoleLogs.length > MAX_CONSOLE_LOG_ENTRIES) {
+          consoleLogs.splice(0, consoleLogs.length - MAX_CONSOLE_LOG_ENTRIES);
+        }
+      });
+
       const instanceId = uuidv4();
       const instance: BrowserInstance = {
         id: instanceId,
@@ -188,6 +208,7 @@ export class BrowserManager {
         createdAt: new Date(),
         lastUsed: new Date(),
         isActive: true,
+        consoleLogs,
         ...(metadata && { metadata })
       };
 
@@ -222,6 +243,54 @@ export class BrowserManager {
       instance.lastUsed = new Date();
     }
     return instance;
+  }
+
+  /**
+   * Get console logs for an instance
+   */
+  getConsoleLogs(
+    instanceId: string,
+    options?: { type?: string; limit?: number; clear?: boolean }
+  ): ToolResult {
+    const instance = this.instances.get(instanceId);
+    if (!instance) {
+      return { success: false, error: `Instance ${instanceId} not found` };
+    }
+
+    const consoleLogs = instance.consoleLogs!;
+    const totalEntries = consoleLogs.length;
+
+    let logs = consoleLogs;
+    const filtered = !!options?.type;
+    if (options?.type) {
+      logs = logs.filter((entry) => entry.type === options.type);
+    }
+
+    if (options?.limit && options.limit > 0) {
+      logs = logs.slice(-options.limit);
+    }
+
+    const returnedEntries = logs.length;
+    const cleared = !!options?.clear;
+
+    // Copy before clearing so we return the right data
+    const result = [...logs];
+
+    if (cleared) {
+      consoleLogs.length = 0;
+    }
+
+    return {
+      success: true,
+      data: {
+        logs: result,
+        totalEntries,
+        returnedEntries,
+        filtered,
+        cleared,
+      },
+      instanceId,
+    };
   }
 
   /**

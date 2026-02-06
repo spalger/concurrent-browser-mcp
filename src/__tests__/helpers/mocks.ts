@@ -26,6 +26,7 @@ export function createMockPage() {
     locator: vi.fn().mockReturnValue({
       pressSequentially: vi.fn().mockResolvedValue(undefined),
     }),
+    on: vi.fn(),
   };
   return page;
 }

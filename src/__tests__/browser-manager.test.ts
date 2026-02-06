@@ -413,6 +413,148 @@ describe('BrowserManager', () => {
     });
   });
 
+  describe('console log capture', () => {
+    it('attaches a console listener when creating an instance', async () => {
+      await manager.createInstance();
+
+      expect(mockPage.on).toHaveBeenCalledWith('console', expect.any(Function));
+    });
+
+    it('captures console messages into instance consoleLogs', async () => {
+      // Capture the listener callback
+      let consoleListener: (msg: unknown) => void = () => {};
+      mockPage.on.mockImplementation((event: string, cb: (msg: unknown) => void) => {
+        if (event === 'console') consoleListener = cb;
+      });
+
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      // Simulate a console message
+      consoleListener({
+        type: () => 'log',
+        text: () => 'hello world',
+        location: () => ({ url: 'https://example.com', lineNumber: 10, columnNumber: 5 }),
+      });
+
+      const instance = manager.getInstance(id);
+      expect(instance!.consoleLogs).toHaveLength(1);
+      expect(instance!.consoleLogs![0].type).toBe('log');
+      expect(instance!.consoleLogs![0].text).toBe('hello world');
+      expect(instance!.consoleLogs![0].location.url).toBe('https://example.com');
+    });
+
+    it('evicts oldest entries when exceeding 1000 cap', async () => {
+      let consoleListener: (msg: unknown) => void = () => {};
+      mockPage.on.mockImplementation((event: string, cb: (msg: unknown) => void) => {
+        if (event === 'console') consoleListener = cb;
+      });
+
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      // Push 1005 messages
+      for (let i = 0; i < 1005; i++) {
+        consoleListener({
+          type: () => 'log',
+          text: () => `msg-${i}`,
+          location: () => ({ url: '', lineNumber: 0, columnNumber: 0 }),
+        });
+      }
+
+      const instance = manager.getInstance(id);
+      expect(instance!.consoleLogs).toHaveLength(1000);
+      // Oldest messages should have been evicted
+      expect(instance!.consoleLogs![0].text).toBe('msg-5');
+    });
+
+    it('getConsoleLogs returns logs for a valid instance', async () => {
+      let consoleListener: (msg: unknown) => void = () => {};
+      mockPage.on.mockImplementation((event: string, cb: (msg: unknown) => void) => {
+        if (event === 'console') consoleListener = cb;
+      });
+
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      consoleListener({
+        type: () => 'error',
+        text: () => 'oops',
+        location: () => ({ url: '', lineNumber: 1, columnNumber: 0 }),
+      });
+
+      const logsResult = manager.getConsoleLogs(id);
+      expect(logsResult.success).toBe(true);
+      expect(logsResult.data.logs).toHaveLength(1);
+      expect(logsResult.data.totalEntries).toBe(1);
+      expect(logsResult.data.returnedEntries).toBe(1);
+    });
+
+    it('getConsoleLogs filters by type', async () => {
+      let consoleListener: (msg: unknown) => void = () => {};
+      mockPage.on.mockImplementation((event: string, cb: (msg: unknown) => void) => {
+        if (event === 'console') consoleListener = cb;
+      });
+
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      consoleListener({ type: () => 'log', text: () => 'a', location: () => ({ url: '', lineNumber: 0, columnNumber: 0 }) });
+      consoleListener({ type: () => 'error', text: () => 'b', location: () => ({ url: '', lineNumber: 0, columnNumber: 0 }) });
+      consoleListener({ type: () => 'log', text: () => 'c', location: () => ({ url: '', lineNumber: 0, columnNumber: 0 }) });
+
+      const logsResult = manager.getConsoleLogs(id, { type: 'error' });
+      expect(logsResult.data.logs).toHaveLength(1);
+      expect(logsResult.data.logs[0].text).toBe('b');
+      expect(logsResult.data.filtered).toBe(true);
+    });
+
+    it('getConsoleLogs respects limit (returns most recent)', async () => {
+      let consoleListener: (msg: unknown) => void = () => {};
+      mockPage.on.mockImplementation((event: string, cb: (msg: unknown) => void) => {
+        if (event === 'console') consoleListener = cb;
+      });
+
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      for (let i = 0; i < 10; i++) {
+        consoleListener({ type: () => 'log', text: () => `msg-${i}`, location: () => ({ url: '', lineNumber: 0, columnNumber: 0 }) });
+      }
+
+      const logsResult = manager.getConsoleLogs(id, { limit: 3 });
+      expect(logsResult.data.logs).toHaveLength(3);
+      expect(logsResult.data.logs[0].text).toBe('msg-7');
+      expect(logsResult.data.logs[2].text).toBe('msg-9');
+    });
+
+    it('getConsoleLogs clears buffer when clear=true', async () => {
+      let consoleListener: (msg: unknown) => void = () => {};
+      mockPage.on.mockImplementation((event: string, cb: (msg: unknown) => void) => {
+        if (event === 'console') consoleListener = cb;
+      });
+
+      const result = await manager.createInstance();
+      const id = result.instanceId!;
+
+      consoleListener({ type: () => 'log', text: () => 'before', location: () => ({ url: '', lineNumber: 0, columnNumber: 0 }) });
+
+      const logsResult = manager.getConsoleLogs(id, { clear: true });
+      expect(logsResult.data.logs).toHaveLength(1);
+      expect(logsResult.data.cleared).toBe(true);
+
+      // Buffer should be empty now
+      const afterResult = manager.getConsoleLogs(id);
+      expect(afterResult.data.logs).toHaveLength(0);
+    });
+
+    it('getConsoleLogs returns error for non-existent instance', () => {
+      const logsResult = manager.getConsoleLogs('non-existent');
+      expect(logsResult.success).toBe(false);
+      expect(logsResult.error).toContain('not found');
+    });
+  });
+
   describe('destroy', () => {
     it('stops cleanup timer and closes all instances', async () => {
       await manager.createInstance();

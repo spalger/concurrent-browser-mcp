@@ -1,5 +1,16 @@
 import { Browser, BrowserContext, Page } from 'playwright';
 
+export interface ConsoleLogEntry {
+  type: string;
+  text: string;
+  timestamp: string;
+  location: {
+    url: string;
+    lineNumber: number;
+    columnNumber: number;
+  };
+}
+
 export interface BrowserInstance {
   id: string;
   browser: Browser;
@@ -8,6 +19,7 @@ export interface BrowserInstance {
   createdAt: Date;
   lastUsed: Date;
   isActive: boolean;
+  consoleLogs?: ConsoleLogEntry[];
   metadata?: {
     name?: string;
     tags?: string[];

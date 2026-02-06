@@ -479,6 +479,37 @@ export class BrowserTools {
         }
       },
 
+      // Console logs tool
+      {
+        name: 'browser_get_console_logs',
+        description: 'Get browser console log messages (errors, warnings, debug info) captured from the page',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            instanceId: {
+              type: 'string',
+              description: 'Instance ID'
+            },
+            type: {
+              type: 'string',
+              enum: ['log', 'error', 'warning', 'info', 'debug', 'trace'],
+              description: 'Filter by log type'
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximum number of entries to return (most recent)',
+              minimum: 1
+            },
+            clear: {
+              type: 'boolean',
+              description: 'Clear the log buffer after retrieving',
+              default: false
+            }
+          },
+          required: ['instanceId']
+        }
+      },
+
       // Content extraction tool
       {
         name: 'browser_get_markdown',
@@ -597,6 +628,13 @@ export class BrowserTools {
         case 'browser_evaluate':
           return await this.evaluate(args['instanceId'] as string, args['script'] as string);
 
+        case 'browser_get_console_logs':
+          return this.browserManager.getConsoleLogs(args['instanceId'] as string, {
+            type: args['type'] as string | undefined,
+            limit: args['limit'] as number | undefined,
+            clear: (args['clear'] as boolean) ?? false,
+          });
+
         case 'browser_get_markdown':
           return await this.getMarkdown(args['instanceId'] as string, {
             includeLinks: (args['includeLinks'] as boolean) ?? true,
@@ -629,6 +667,10 @@ export class BrowserTools {
     const instance = this.browserManager.getInstance(instanceId);
     if (!instance) {
       return { success: false, error: `Instance ${instanceId} not found` };
+    }
+
+    if (instance.consoleLogs) {
+      instance.consoleLogs.length = 0;
     }
 
     try {
