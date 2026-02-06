@@ -32,7 +32,6 @@ export interface BrowserConfig {
   contextOptions?: {
     ignoreHTTPSErrors?: boolean;
     bypassCSP?: boolean;
-    storageState?: string;
   };
 }
 

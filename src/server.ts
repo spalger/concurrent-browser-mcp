@@ -97,9 +97,9 @@ export class ConcurrentBrowserServer {
   async shutdown() {
     try {
       await this.browserManager.destroy();
-          console.error('Server closed');
-  } catch (error) {
-    console.error('Error closing server:', error);
+      console.error('Server closed');
+    } catch (error) {
+      console.error('Error closing server:', error);
     }
   }
 }
@@ -115,7 +115,7 @@ export const defaultConfig: ServerConfig = {
       height: 720,
     },
     contextOptions: {
-      ignoreHTTPSErrors: true,
+      ignoreHTTPSErrors: false,
     },
   },
   instanceTimeout: 30 * 60 * 1000, // 30 minutes

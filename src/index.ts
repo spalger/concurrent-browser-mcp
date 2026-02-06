@@ -128,9 +128,4 @@ program.configureHelp({
   helpWidth: 80,
 });
 
-program.parse();
-
-// Show help if no arguments provided
-if (!process.argv.slice(2).length) {
-  program.outputHelp();
-} 
+program.parse(); 

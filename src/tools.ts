@@ -1,15 +1,37 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { BrowserManager } from './browser-manager.js';
-import { 
-  ToolResult, 
-  NavigationOptions, 
-  ClickOptions, 
-  TypeOptions, 
+import {
+  BrowserConfig,
+  BrowserInstance,
+  ToolResult,
+  NavigationOptions,
+  ClickOptions,
+  TypeOptions,
   ScreenshotOptions
 } from './types.js';
 
+const MAX_SCRIPT_SIZE = 1_000_000;
+const MAX_SELECTOR_SIZE = 10_000;
+
 export class BrowserTools {
   constructor(private browserManager: BrowserManager) {}
+
+  private validateUrl(url: string): void {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(`Unsupported URL protocol: ${parsed.protocol} — only http: and https: are allowed`);
+    }
+  }
+
+  private validateSelector(selector: string): ToolResult | null {
+    if (selector.length > MAX_SELECTOR_SIZE) {
+      return {
+        success: false,
+        error: `Selector exceeds maximum size of ${MAX_SELECTOR_SIZE} characters`
+      };
+    }
+    return null;
+  }
 
   /**
    * Get all tool definitions
@@ -492,94 +514,94 @@ export class BrowserTools {
   /**
    * Execute tools
    */
-  async executeTools(name: string, args: any): Promise<ToolResult> {
+  async executeTools(name: string, args: Record<string, unknown>): Promise<ToolResult> {
     try {
       switch (name) {
         case 'browser_create_instance':
           return await this.browserManager.createInstance(
             {
-              browserType: args.browserType || 'chromium',
-              headless: args.headless ?? true,
-              viewport: args.viewport || { width: 1280, height: 720 },
-              userAgent: args.userAgent
+              browserType: (args['browserType'] as BrowserConfig['browserType']) || 'chromium',
+              headless: (args['headless'] as boolean) ?? true,
+              viewport: (args['viewport'] as { width: number; height: number }) || { width: 1280, height: 720 },
+              userAgent: args['userAgent'] as string | undefined
             },
-            args.metadata
+            args['metadata'] as BrowserInstance['metadata']
           );
 
         case 'browser_list_instances':
           return this.browserManager.listInstances();
 
         case 'browser_close_instance':
-          return await this.browserManager.closeInstance(args.instanceId);
+          return await this.browserManager.closeInstance(args['instanceId'] as string);
 
         case 'browser_close_all_instances':
           return await this.browserManager.closeAllInstances();
 
         case 'browser_navigate':
-          return await this.navigate(args.instanceId, args.url, {
-            timeout: args.timeout || 30000,
-            waitUntil: args.waitUntil || 'load'
+          return await this.navigate(args['instanceId'] as string, args['url'] as string, {
+            timeout: (args['timeout'] as number) || 30000,
+            waitUntil: (args['waitUntil'] as NavigationOptions['waitUntil']) || 'load'
           });
 
         case 'browser_go_back':
-          return await this.goBack(args.instanceId);
+          return await this.goBack(args['instanceId'] as string);
 
         case 'browser_go_forward':
-          return await this.goForward(args.instanceId);
+          return await this.goForward(args['instanceId'] as string);
 
         case 'browser_refresh':
-          return await this.refresh(args.instanceId);
+          return await this.refresh(args['instanceId'] as string);
 
         case 'browser_click':
-          return await this.click(args.instanceId, args.selector, {
-            button: args.button || 'left',
-            clickCount: args.clickCount || 1,
-            delay: args.delay || 0,
-            timeout: args.timeout || 30000
+          return await this.click(args['instanceId'] as string, args['selector'] as string, {
+            button: (args['button'] as ClickOptions['button']) || 'left',
+            clickCount: (args['clickCount'] as number) || 1,
+            delay: (args['delay'] as number) || 0,
+            timeout: (args['timeout'] as number) || 30000
           });
 
         case 'browser_type':
-          return await this.type(args.instanceId, args.selector, args.text, {
-            delay: args.delay || 0,
-            timeout: args.timeout || 30000
+          return await this.type(args['instanceId'] as string, args['selector'] as string, args['text'] as string, {
+            delay: (args['delay'] as number) || 0,
+            timeout: (args['timeout'] as number) || 30000
           });
 
         case 'browser_fill':
-          return await this.fill(args.instanceId, args.selector, args.value, args.timeout || 30000);
+          return await this.fill(args['instanceId'] as string, args['selector'] as string, args['value'] as string, (args['timeout'] as number) || 30000);
 
         case 'browser_select_option':
-          return await this.selectOption(args.instanceId, args.selector, args.value, args.timeout || 30000);
+          return await this.selectOption(args['instanceId'] as string, args['selector'] as string, args['value'] as string, (args['timeout'] as number) || 30000);
 
         case 'browser_get_page_info':
-          return await this.getPageInfo(args.instanceId);
+          return await this.getPageInfo(args['instanceId'] as string);
 
         case 'browser_get_element_text':
-          return await this.getElementText(args.instanceId, args.selector, args.timeout || 30000);
+          return await this.getElementText(args['instanceId'] as string, args['selector'] as string, (args['timeout'] as number) || 30000);
 
         case 'browser_get_element_attribute':
-          return await this.getElementAttribute(args.instanceId, args.selector, args.attribute, args.timeout || 30000);
+          return await this.getElementAttribute(args['instanceId'] as string, args['selector'] as string, args['attribute'] as string, (args['timeout'] as number) || 30000);
 
         case 'browser_screenshot':
-          return await this.screenshot(args.instanceId, {
-            fullPage: args.fullPage || false,
-            type: args.type || 'png',
-            quality: args.quality || 80
-          }, args.selector);
+          return await this.screenshot(args['instanceId'] as string, {
+            fullPage: (args['fullPage'] as boolean) || false,
+            type: (args['type'] as 'png' | 'jpeg') || 'png',
+            quality: (args['quality'] as number) || 80
+          }, args['selector'] as string | undefined);
 
         case 'browser_wait_for_element':
-          return await this.waitForElement(args.instanceId, args.selector, args.timeout || 30000);
+          return await this.waitForElement(args['instanceId'] as string, args['selector'] as string, (args['timeout'] as number) || 30000);
 
         case 'browser_wait_for_navigation':
-          return await this.waitForNavigation(args.instanceId, args.timeout || 30000);
+          return await this.waitForNavigation(args['instanceId'] as string, (args['timeout'] as number) || 30000);
 
         case 'browser_evaluate':
-          return await this.evaluate(args.instanceId, args.script);
+          return await this.evaluate(args['instanceId'] as string, args['script'] as string);
 
         case 'browser_get_markdown':
-          return await this.getMarkdown(args.instanceId, {
-            includeLinks: args.includeLinks ?? true,
-            maxLength: args.maxLength || 10000,
-            selector: args.selector
+          return await this.getMarkdown(args['instanceId'] as string, {
+            includeLinks: (args['includeLinks'] as boolean) ?? true,
+            maxLength: (args['maxLength'] as number) || 10000,
+            selector: args['selector'] as string | undefined
           });
 
         default:
@@ -598,6 +620,12 @@ export class BrowserTools {
 
   // Implementation of specific tool methods
   private async navigate(instanceId: string, url: string, options: NavigationOptions): Promise<ToolResult> {
+    try {
+      this.validateUrl(url);
+    } catch (error) {
+      return { success: false, error: `Invalid URL: ${error instanceof Error ? error.message : error}` };
+    }
+
     const instance = this.browserManager.getInstance(instanceId);
     if (!instance) {
       return { success: false, error: `Instance ${instanceId} not found` };
@@ -692,6 +720,9 @@ export class BrowserTools {
   }
 
   private async click(instanceId: string, selector: string, options: ClickOptions): Promise<ToolResult> {
+    const selectorError = this.validateSelector(selector);
+    if (selectorError) return selectorError;
+
     const instance = this.browserManager.getInstance(instanceId);
     if (!instance) {
       return { success: false, error: `Instance ${instanceId} not found` };
@@ -720,6 +751,9 @@ export class BrowserTools {
   }
 
   private async type(instanceId: string, selector: string, text: string, options: TypeOptions): Promise<ToolResult> {
+    const selectorError = this.validateSelector(selector);
+    if (selectorError) return selectorError;
+
     const instance = this.browserManager.getInstance(instanceId);
     if (!instance) {
       return { success: false, error: `Instance ${instanceId} not found` };
@@ -729,7 +763,7 @@ export class BrowserTools {
       const typeOptions: any = {};
       if (options.delay) typeOptions.delay = options.delay;
       if (options.timeout) typeOptions.timeout = options.timeout;
-      await instance.page.type(selector, text, typeOptions);
+      await instance.page.locator(selector).pressSequentially(text, typeOptions);
       return {
         success: true,
         data: { selector, text, typed: true },
@@ -745,6 +779,9 @@ export class BrowserTools {
   }
 
   private async fill(instanceId: string, selector: string, value: string, timeout: number): Promise<ToolResult> {
+    const selectorError = this.validateSelector(selector);
+    if (selectorError) return selectorError;
+
     const instance = this.browserManager.getInstance(instanceId);
     if (!instance) {
       return { success: false, error: `Instance ${instanceId} not found` };
@@ -767,6 +804,9 @@ export class BrowserTools {
   }
 
   private async selectOption(instanceId: string, selector: string, value: string, timeout: number): Promise<ToolResult> {
+    const selectorError = this.validateSelector(selector);
+    if (selectorError) return selectorError;
+
     const instance = this.browserManager.getInstance(instanceId);
     if (!instance) {
       return { success: false, error: `Instance ${instanceId} not found` };
@@ -844,6 +884,9 @@ export class BrowserTools {
   }
 
   private async getElementText(instanceId: string, selector: string, timeout: number): Promise<ToolResult> {
+    const selectorError = this.validateSelector(selector);
+    if (selectorError) return selectorError;
+
     const instance = this.browserManager.getInstance(instanceId);
     if (!instance) {
       return { success: false, error: `Instance ${instanceId} not found` };
@@ -866,6 +909,9 @@ export class BrowserTools {
   }
 
   private async getElementAttribute(instanceId: string, selector: string, attribute: string, timeout: number): Promise<ToolResult> {
+    const selectorError = this.validateSelector(selector);
+    if (selectorError) return selectorError;
+
     const instance = this.browserManager.getInstance(instanceId);
     if (!instance) {
       return { success: false, error: `Instance ${instanceId} not found` };
@@ -888,6 +934,11 @@ export class BrowserTools {
   }
 
   private async screenshot(instanceId: string, options: ScreenshotOptions, selector?: string): Promise<ToolResult> {
+    if (selector) {
+      const selectorError = this.validateSelector(selector);
+      if (selectorError) return selectorError;
+    }
+
     const instance = this.browserManager.getInstance(instanceId);
     if (!instance) {
       return { success: false, error: `Instance ${instanceId} not found` };
@@ -933,6 +984,9 @@ export class BrowserTools {
   }
 
   private async waitForElement(instanceId: string, selector: string, timeout: number): Promise<ToolResult> {
+    const selectorError = this.validateSelector(selector);
+    if (selectorError) return selectorError;
+
     const instance = this.browserManager.getInstance(instanceId);
     if (!instance) {
       return { success: false, error: `Instance ${instanceId} not found` };
@@ -961,7 +1015,7 @@ export class BrowserTools {
     }
 
     try {
-      await instance.page.waitForNavigation({ timeout });
+      await instance.page.waitForEvent('framenavigated', { timeout });
       return {
         success: true,
         data: { url: instance.page.url() },
@@ -977,6 +1031,10 @@ export class BrowserTools {
   }
 
   private async evaluate(instanceId: string, script: string): Promise<ToolResult> {
+    if (script.length > MAX_SCRIPT_SIZE) {
+      return { success: false, error: `Script exceeds maximum size of ${MAX_SCRIPT_SIZE} characters` };
+    }
+
     const instance = this.browserManager.getInstance(instanceId);
     if (!instance) {
       return { success: false, error: `Instance ${instanceId} not found` };

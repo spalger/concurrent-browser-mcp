@@ -8,13 +8,42 @@ export class BrowserManager {
   private config: ServerConfig;
   private cleanupTimer?: NodeJS.Timeout;
   private detectedProxy?: string;
+  private operationLocks: Map<string, number> = new Map();
+  private proxyInitialized: Promise<void>;
 
   constructor(config: ServerConfig) {
     this.config = config;
     this.startCleanupTimer();
-    
+
     // Initialize proxy detection during construction
-    this.initializeProxy();
+    this.proxyInitialized = this.initializeProxy();
+  }
+
+  /**
+   * Acquire an operation lock for an instance.
+   * Returns a release function, or undefined if the instance doesn't exist.
+   */
+  acquireOperationLock(instanceId: string): (() => void) | undefined {
+    if (!this.instances.has(instanceId)) {
+      return undefined;
+    }
+    const current = this.operationLocks.get(instanceId) ?? 0;
+    this.operationLocks.set(instanceId, current + 1);
+    return () => {
+      const count = this.operationLocks.get(instanceId) ?? 0;
+      if (count <= 1) {
+        this.operationLocks.delete(instanceId);
+      } else {
+        this.operationLocks.set(instanceId, count - 1);
+      }
+    };
+  }
+
+  /**
+   * Check if an instance has active operation locks.
+   */
+  isInstanceLocked(instanceId: string): boolean {
+    return (this.operationLocks.get(instanceId) ?? 0) > 0;
   }
 
   /**
@@ -45,17 +74,7 @@ export class BrowserManager {
       return envProxy;
     }
 
-    // 2. Check common proxy ports
-    const commonPorts = [7890, 1087, 8080, 3128, 8888, 10809, 20171];
-    for (const port of commonPorts) {
-      const proxyUrl = `http://127.0.0.1:${port}`;
-      if (await this.testProxyConnection(proxyUrl)) {
-        console.log(`Local proxy port detected: ${port}`);
-        return proxyUrl;
-      }
-    }
-
-    // 3. Try to detect system proxy settings (macOS)
+    // 2. Try to detect system proxy settings (macOS)
     if (process.platform === 'darwin') {
       const systemProxy = this.getMacOSSystemProxy();
       if (systemProxy) {
@@ -104,41 +123,6 @@ export class BrowserManager {
     return undefined;
   }
 
-  /**
-   * Test proxy connection
-   */
-  private async testProxyConnection(proxyUrl: string): Promise<boolean> {
-    try {
-      // Simple port detection to avoid network request complexity
-      const url = new URL(proxyUrl);
-      const net = require('net');
-      
-      return new Promise((resolve) => {
-        const socket = new net.Socket();
-        socket.setTimeout(3000);
-        
-        socket.on('connect', () => {
-          socket.destroy();
-          resolve(true);
-        });
-        
-        socket.on('timeout', () => {
-          socket.destroy();
-          resolve(false);
-        });
-        
-        socket.on('error', () => {
-          resolve(false);
-        });
-        
-        socket.connect(parseInt(url.port), url.hostname);
-      });
-    } catch (error) {
-      return false;
-    }
-  }
-
-  
 
   /**
    * Get effective proxy configuration
@@ -164,6 +148,8 @@ export class BrowserManager {
     metadata?: BrowserInstance['metadata']
   ): Promise<ToolResult> {
     try {
+      await this.proxyInitialized;
+
       if (this.instances.size >= this.config.maxInstances) {
         return {
           success: false,
@@ -174,18 +160,19 @@ export class BrowserManager {
       const config = { ...this.config.defaultBrowserConfig, ...browserConfig };
       const browser = await this.launchBrowser(config);
       
-      const contextOptions: any = {
+      const contextOptions: Record<string, unknown> = {
         viewport: config.viewport,
-        ...config.contextOptions
+        ignoreHTTPSErrors: config.contextOptions?.ignoreHTTPSErrors,
+        bypassCSP: config.contextOptions?.bypassCSP,
       };
       if (config.userAgent) {
-        contextOptions.userAgent = config.userAgent;
+        contextOptions['userAgent'] = config.userAgent;
       }
-      
+
       // Add proxy configuration to context
       const effectiveProxy = this.getEffectiveProxy(browserConfig);
       if (effectiveProxy) {
-        contextOptions.proxy = { server: effectiveProxy };
+        contextOptions['proxy'] = { server: effectiveProxy };
       }
       
       const context = await browser.newContext(contextOptions);
@@ -294,13 +281,14 @@ export class BrowserManager {
    */
   async closeAllInstances(): Promise<ToolResult> {
     try {
-      const closePromises = Array.from(this.instances.values()).map(
-        instance => instance.browser.close()
-      );
-      
-      await Promise.all(closePromises);
-      const closedCount = this.instances.size;
-      this.instances.clear();
+      const entries = Array.from(this.instances.entries());
+      const closePromises = entries.map(async ([id, instance]) => {
+        await instance.browser.close();
+        this.instances.delete(id);
+      });
+
+      await Promise.allSettled(closePromises);
+      const closedCount = entries.length;
 
       return {
         success: true,
@@ -364,6 +352,7 @@ export class BrowserManager {
     const instancesToClose: string[] = [];
 
     for (const [id, instance] of this.instances.entries()) {
+      if (this.isInstanceLocked(id)) continue;
       const timeSinceLastUsed = now.getTime() - instance.lastUsed.getTime();
       if (timeSinceLastUsed > this.config.instanceTimeout) {
         instancesToClose.push(id);
